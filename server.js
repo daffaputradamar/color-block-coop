@@ -1,6 +1,7 @@
 // Color Block Co-op server: serves the web client and runs authoritative game rooms over WebSocket.
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
@@ -69,10 +70,40 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// Asset URLs carry a content hash (?v=...), so a cache can never pair a new page with an old
+// script. (Cloudflare turns no-cache on .js into a 4-hour max-age.) Versioned URLs cache for good.
+async function assetVersion() {
+  const hash = createHash('sha1');
+  for (const dir of ['public', 'shared']) {
+    for (const f of (await readdir(join(ROOT, dir))).sort()) {
+      if (/\.(js|css)$/.test(f)) hash.update(f).update(await readFile(join(ROOT, dir, f)));
+    }
+  }
+  return hash.digest('hex').slice(0, 10);
+}
+
+// index.html with versioned asset links, plus an import map so the modules' own imports
+// (./render.js, /shared/logic.js, ...) resolve to versioned URLs too.
+async function versionedIndex() {
+  const v = await assetVersion();
+  const modules = [
+    ...(await readdir(join(ROOT, 'public'))).filter((f) => f.endsWith('.js') && f !== 'config.js').map((f) => `/${f}`),
+    ...(await readdir(join(ROOT, 'shared'))).filter((f) => f.endsWith('.js')).map((f) => `/shared/${f}`),
+  ];
+  const importMap = JSON.stringify({ imports: Object.fromEntries(modules.map((m) => [m, `${m}?v=${v}`])) });
+  return (await readFile(join(ROOT, 'public', 'index.html'), 'utf8'))
+    .replace('href="style.css"', `href="style.css?v=${v}"`)
+    .replace('<script src="config.js"></script>', `<script type="importmap">${importMap}</script>\n  <script src="config.js?v=${v}"></script>`)
+    .replace('src="client.js"', `src="client.js?v=${v}"`);
+}
+
 async function handleHttp(req, res) {
   let pathname;
+  let versioned;
   try {
-    pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const url = new URL(req.url, 'http://x');
+    pathname = decodeURIComponent(url.pathname);
+    versioned = url.searchParams.has('v');
   } catch {
     res.writeHead(400).end();
     return;
@@ -84,7 +115,11 @@ async function handleHttp(req, res) {
     res.end(originAllowed(req.headers.origin, req.headers.host) ? 'ok' : 'origin-refused');
     return;
   }
-  if (pathname === '/') pathname = '/index.html';
+  if (pathname === '/' || pathname === '/index.html') {
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
+    res.end(await versionedIndex());
+    return;
+  }
   const shared = pathname.startsWith('/shared/');
   const base = join(ROOT, shared ? 'shared' : 'public');
   const file = normalize(join(base, shared ? pathname.slice('/shared'.length) : pathname));
@@ -96,7 +131,7 @@ async function handleHttp(req, res) {
     const body = await readFile(file);
     res.writeHead(200, {
       'Content-Type': MIME[extname(file)] ?? 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': versioned ? 'public, max-age=31536000, immutable' : 'no-cache',
     });
     res.end(body);
   } catch {
