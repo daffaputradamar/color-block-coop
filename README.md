@@ -14,49 +14,130 @@ Open http://localhost:3000, enter a name, **Create a room**, then click the room
 invite link (`/?room=ABCD`). Friends open the link and they're in. Use `PORT=4000 npm start` for
 another port.
 
-To play with friends who aren't on your network, deploy it (below), or expose your machine
-temporarily with a tunnel such as `cloudflared tunnel --url http://localhost:3000`.
+To play with friends who aren't on your network, host it from your PC (next section) or deploy
+it (further below).
 
-## Deploy: frontend on Vercel, game server on Render
+## Host from your PC with a Cloudflare Tunnel (Windows)
 
-The game server keeps each room in memory and holds long-lived WebSockets, so it runs on Render as
-one always-on Node process. Vercel serves only the static page (`dist/`, built by
-`scripts/build-static.js`). Vercel Functions can't host the server itself: their sockets close at
-the function time limit, and players in one room can land on different instances.
+Puts the game online at your own address, e.g. `https://play.example.com`, straight from this PC.
+No server, no card. Needs a domain whose DNS is on Cloudflare (free plan) and `cloudflared`:
 
-Both platforms deploy from Git, so first push this folder to a GitHub (or GitLab/Bitbucket) repo.
+```bash
+winget install --id Cloudflare.cloudflared -e
+```
 
-1. **Render (game server).** In the Render dashboard choose **New > Blueprint** and pick the repo.
-   `render.yaml` creates a free web service in Singapore with health check `/healthz`. Check that
-   the Free instance type is offered in Singapore before confirming, because the region can't be
-   changed later. Leave `ALLOWED_ORIGINS` empty for now. Once it's live, copy the service URL,
-   e.g. `https://color-block-coop.onrender.com` (opening `/healthz` there should show `ok`).
-2. **Vercel (frontend).** Import the same repo with Root Directory left at the repo root.
-   `vercel.json` sets the Framework Preset to *Other*, skips `npm install` and builds `dist/`.
-   The dashboard may still show "Node" because of `server.js`; set it to **Other** too, and never
-   remove `"framework": null`, or Vercel turns `server.js` into a Function. Under
-   **Settings > Environment Variables** add `GAME_SERVER_URL` = your Render URL for Production and
-   Preview, then deploy. The build fails on purpose if this variable is missing.
-3. **Lock the server to your site.** Back on Render, set `ALLOWED_ORIGINS` to your Vercel production
-   URL, e.g. `https://color-block-coop.vercel.app` (a bare host gets `https://` added). Saving
-   redeploys. If a page shows "The game server refused this page", its origin is missing from the list.
-   To test preview deployments you can add a wildcard such as
-   `https://color-block-coop-*-yourteam.vercel.app`, but treat it as a convenience, not a lock:
-   anyone can claim a `vercel.app` name that happens to match. The check only stops other websites
-   from embedding your game, so for production list exact URLs.
+1. **Once:** double-click `setup-tunnel.cmd`. It asks for the address and port, opens a browser to
+   log in to Cloudflare, creates a tunnel called `color-block` (or reuses it), adds the DNS record
+   and writes `tunnel/config.yml` inside this folder. Your other tunnels and your global
+   `~/.cloudflared/config.yml` are left alone.
+2. **Every time you play:** double-click `start-game.cmd`. It installs dependencies on first run,
+   starts the game server and the tunnel together, waits until your address answers, and opens it.
+   Press **Ctrl+C** (or close the window) to stop both.
 
-Share the Vercel **production** URL with players: preview URLs sit behind Vercel's login.
+The game is online only while that window is open and the PC is awake. Without a tunnel set up,
+`start-game.cmd` still runs the game for this PC. If you created the tunnel in the Cloudflare
+dashboard instead (it runs as the `Cloudflared` Windows service), `start-game.cmd` detects the
+service and only starts the game server. For a quick throwaway link without a domain:
+`cloudflared tunnel --url http://localhost:3000`.
 
-Things to know about the free tier:
+## Deploy: your domain on Vercel, game server on Railway
 
-- The Render service sleeps after 15 minutes with no players and takes about a minute to wake.
-  The page starts waking it as soon as it opens, and shows "Waking up the game server…" meanwhile.
-- A restart or redeploy wipes the rooms in memory. Connected players reconnect automatically and
-  their room is rebuilt at the same level with the same unlocks. A game in progress restarts its board.
-- Commits that only touch `public/`, `scripts/`, docs or `vercel.json` don't redeploy Render (see
-  `buildFilter` in `render.yaml`), so you can ship frontend changes without dropping live games.
-  Changes to `shared/` redeploy both, since the browser and the server share the rules.
-- Players in Indonesia get the static page from Vercel's CDN and talk to the Singapore server.
+The game server keeps each room in memory and holds long-lived WebSockets, so it runs on Railway
+as one Node process. Vercel serves only the static page (`dist/`, built by
+`scripts/build-static.js`) on your own domain. Vercel Functions can't host the server itself:
+their sockets close at the function time limit, and players in one room can land on different
+instances. Neither platform needs a credit card for this setup.
+
+Both deploy from GitHub, so push this repo there first. The examples below use
+`play.yourdomain.com` for the game; substitute your own domain.
+
+### 1. Game server on Railway
+
+Check [status.railway.com](https://status.railway.com) first: deploys queue or fail during outages.
+
+1. Sign up at railway.com with **Login with GitHub** (no card). Railway checks your GitHub
+   account automatically; if the dashboard says **Limited Trial**, open railway.com/verify before
+   deploying.
+2. Before creating anything, open **Workspace Settings** and set the preferred region to
+   **Southeast Asia (Singapore)**. Region choice is only available during the 30-day trial.
+3. **New Project > GitHub repo**, pick this repo, then choose **Add variables**, not *Deploy Now*,
+   so the settings below are in place before the first build.
+4. In the service's **Settings** (Railway ignores `railway.json` files in new projects, so these
+   live in the dashboard):
+
+   | Setting | Value |
+   | --- | --- |
+   | Source | branch `main`, root directory `/` |
+   | Builder | Railpack (the default). Don't add a Dockerfile: Railway always prefers one. |
+   | Watch paths | `/server.js`, `/shared/**`, `/package.json`, `/package-lock.json` (one per line) |
+   | Custom start command | `node server.js` (not `npm start`: npm swallows the SIGTERM the server uses to hand players over on deploys) |
+   | Healthcheck path / timeout | `/healthz` / `60` |
+   | Restart policy | On Failure, 10 retries |
+   | Serverless | **Enabled** (sleeps when nobody is playing; needed to fit the free credit) |
+   | Scale > Regions | Southeast Asia (Singapore), 1 replica. Never more: rooms live in memory. |
+
+5. **Variables:** add `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` = `10`. Leave `ALLOWED_ORIGINS`
+   unset for now. Don't set `PORT` (Railway injects it), `VERCEL`, or `RAILPACK_SPA_OUTPUT_DIR`.
+   Node 24 comes from `engines` in `package.json`.
+6. Click **Deploy**. When it's active, go to **Settings > Networking > Generate Domain**. Opening
+   `https://<name>.up.railway.app/healthz` should show `ok`.
+
+### 2. Frontend on Vercel
+
+1. Import the same repo, Root Directory at the repo root. `vercel.json` sets the Framework Preset
+   to *Other*, skips `npm install` and builds `dist/`. The dashboard may show "Node" because of
+   `server.js`; set it to **Other** too, and never remove `"framework": null`, or Vercel turns
+   `server.js` into a Function.
+2. Under **Settings > Environment Variables** add `GAME_SERVER_URL` =
+   `https://<name>.up.railway.app` for Production and Preview, then deploy. The build fails on
+   purpose if it's missing. The value is baked in at build time, so changing it needs a redeploy.
+
+### 3. Your domain
+
+1. In the Vercel project: **Settings > Domains > Add Domain** > `play.yourdomain.com`, connected to
+   Production.
+2. Find out who runs DNS for your domain (`nslookup -type=NS yourdomain.com`) and add the record
+   there. For a subdomain it's a CNAME named `play` pointing to the **project-specific target Vercel
+   shows** (looks like `<hash>.vercel-dns-0NN.com`; don't copy old values from tutorials). If DNS is
+   on Cloudflare, set the record to **DNS only** (grey cloud). Remove any other A/AAAA/CNAME on `play`.
+3. Wait for **Valid Configuration**. Vercel issues the HTTPS certificate on its own, usually within
+   minutes.
+
+Leave Deployment Protection on *Standard*: it keeps your domain public and only puts preview URLs
+behind a Vercel login. Don't put your domain on Railway: the trial allows one custom domain and the
+free plan none, so it would break after 30 days.
+
+### 4. Lock the server to your site
+
+In Railway **Variables**, set `ALLOWED_ORIGINS` to
+`https://play.yourdomain.com,https://<project>.vercel.app` and deploy the staged change. If a page
+shows "The game server refused this page", its exact origin is missing from that list. Preview
+deployments will show that message, which is expected. Wildcards like
+`https://color-block-coop-*-yourteam.vercel.app` work for testing, but aren't a lock: anyone can
+claim a matching `vercel.app` name.
+
+Invite links follow the page's address, so players share `https://play.yourdomain.com/?room=ABCD`.
+
+### Free-tier notes
+
+- **Trial, then Free.** The trial is 30 days with $5 of credit, then the Free plan gives $1 a month.
+  A small Node process like this one should fit, but check **Usage** after the first week. When
+  the trial ends, open the service and **Redeploy** if it shows as stopped, and check its region:
+  the Free plan doesn't offer region choice, so it may end up in the US or EU (moves still feel
+  instant because the browser predicts them). Keep this as your only Railway project; Free allows one.
+- **Sleeping.** With no players for about 10 minutes the server sleeps, which wipes its rooms. The
+  page wakes it on open and shows "Waking up the game server…" until it's back. An open tab keeps
+  it awake, so close the game when you're done to save credit.
+- **Restarts and deploys** wipe the rooms too. Connected players reconnect automatically and their
+  room is rebuilt at the same level with the same unlocks; a game in progress restarts its board.
+- **What redeploys.** With the watch paths above, commits that only touch `public/`, `scripts/` or
+  docs don't restart the server, so you can ship page changes without dropping live games. Changes
+  to `shared/` redeploy both, since the browser and the server share the rules.
+- **Queued deploys.** Free accounts' builds can wait in a queue when Railway is busy ("Limited
+  Access" in the dashboard). They run on their own; nothing that's already running is affected.
+
+`render.yaml` describes the same server for Render, if you'd rather use it there. Render asks some
+free accounts to verify a card.
 
 To try the split locally, run the server on one port and the built page on another:
 

@@ -93,6 +93,11 @@ function setLobbyBusy(busy) {
   $('join-btn').disabled = busy;
 }
 
+function resetSession() {
+  Object.assign(S, { joined: false, me: null, level: null, blocks: [], players: [], grabs: {}, owners: {}, drag: null });
+  S.cursors.clear();
+}
+
 function startJoin(code) {
   if (S.connecting) return;
   const name = $('name-input').value.trim();
@@ -103,8 +108,7 @@ function startJoin(code) {
   }
   store.set('cb-name', name);
   // A join from the lobby is always a fresh session, even right after being sent back here.
-  Object.assign(S, { joined: false, me: null, level: null, blocks: [], players: [], grabs: {}, owners: {}, drag: null });
-  S.cursors.clear();
+  resetSession();
   S.name = name;
   S.code = code || null;
   S.fatal = false;
@@ -563,6 +567,18 @@ $('mode-seg').addEventListener('click', (e) => {
 $('retry-btn').onclick = () => send({ type: 'retry' });
 $('result-retry').onclick = () => send({ type: 'retry' });
 $('result-next').onclick = () => send({ type: 'next' });
+// Leaving closes the socket for good (no auto-reconnect); teammates see "<name> left".
+$('leave-btn').onclick = () => {
+  if (!confirm('Leave this room?')) return;
+  S.fatal = true;
+  S.ws?.close();
+  resetSession();
+  history.replaceState(null, '', location.pathname);
+  for (const id of ['game', 'result', 'picker', 'conn']) $(id).classList.add('hidden');
+  $('lobby').classList.remove('hidden');
+  lobbyMessage('You left the room.', 'info');
+};
+
 $('levels-btn').onclick = () => {
   renderPicker();
   $('picker').classList.remove('hidden');
