@@ -1,5 +1,5 @@
 // One-time Cloudflare Tunnel setup for hosting the game from this PC.
-// Usage: node scripts/setup-tunnel.js [hostname] [port]   (or double-click setup-tunnel.cmd)
+// Usage: node scripts/setup-tunnel.js [hostname] [port]   (or double-click setup-tunnel.bat)
 // Needs: cloudflared installed, and the hostname's domain using Cloudflare DNS.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -77,7 +77,7 @@ if (cloudflared(['tunnel', 'route', 'dns', TUNNEL_NAME, hostname]).status !== 0)
 mkdirSync(outDir, { recursive: true });
 const configPath = join(outDir, 'config.yml');
 writeFileSync(configPath, [
-  '# Written by scripts/setup-tunnel.js. Re-run setup-tunnel.cmd to change it.',
+  '# Written by scripts/setup-tunnel.js. Re-run setup-tunnel.bat to change it.',
   `tunnel: ${tunnel.id}`,
   `credentials-file: '${credentials}'`,
   'ingress:',
@@ -89,4 +89,4 @@ writeFileSync(configPath, [
 writeFileSync(join(outDir, 'settings.json'), JSON.stringify({ name: TUNNEL_NAME, hostname, port }, null, 2) + '\n');
 
 if (cloudflared(['tunnel', '--config', configPath, 'ingress', 'validate']).status !== 0) fail('The tunnel config is invalid.');
-console.log(`\nAll set. Run start-game.cmd, then share https://${hostname}`);
+console.log(`\nAll set. Run start-game.bat, then share https://${hostname}`);

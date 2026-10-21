@@ -26,17 +26,17 @@ No server, no card. Needs a domain whose DNS is on Cloudflare (free plan) and `c
 winget install --id Cloudflare.cloudflared -e
 ```
 
-1. **Once:** double-click `setup-tunnel.cmd`. It asks for the address and port, opens a browser to
+1. **Once:** double-click `setup-tunnel.bat`. It asks for the address and port, opens a browser to
    log in to Cloudflare, creates a tunnel called `color-block` (or reuses it), adds the DNS record
    and writes `tunnel/config.yml` inside this folder. Your other tunnels and your global
    `~/.cloudflared/config.yml` are left alone.
-2. **Every time you play:** double-click `start-game.cmd`. It installs dependencies on first run,
+2. **Every time you play:** double-click `start-game.bat`. It installs dependencies on first run,
    starts the game server and the tunnel together, waits until your address answers, and opens it.
    Press **Ctrl+C** (or close the window) to stop both.
 
 The game is online only while that window is open and the PC is awake. Without a tunnel set up,
-`start-game.cmd` still runs the game for this PC. If you created the tunnel in the Cloudflare
-dashboard instead (it runs as the `Cloudflared` Windows service), `start-game.cmd` detects the
+`start-game.bat` still runs the game for this PC. If you created the tunnel in the Cloudflare
+dashboard instead (it runs as the `Cloudflared` Windows service), `start-game.bat` detects the
 service and only starts the game server. For a quick throwaway link without a domain:
 `cloudflared tunnel --url http://localhost:3000`.
 

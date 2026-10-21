@@ -1,5 +1,5 @@
-// Starts the game server and, if setup-tunnel.cmd was run, the Cloudflare Tunnel too.
-// Usage: node scripts/start-game.js   (or double-click start-game.cmd). Ctrl+C stops both.
+// Starts the game server and, if setup-tunnel.bat was run, the Cloudflare Tunnel too.
+// Usage: node scripts/start-game.js   (or double-click start-game.bat). Ctrl+C stops both.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import net from 'node:net';
@@ -69,7 +69,7 @@ game.on('exit', (code) => {
   stopAll(code ?? 0);
 });
 
-// 3. Tunnel: our own config if setup-tunnel.cmd was run, otherwise maybe the Windows service.
+// 3. Tunnel: our own config if setup-tunnel.bat was run, otherwise maybe the Windows service.
 let publicUrl = null;
 if (settings) {
   publicUrl = `https://${settings.hostname}`;
@@ -90,7 +90,7 @@ if (settings) {
 } else if (isWindows && /RUNNING/.test(spawnSync('sc', ['query', 'cloudflared'], { encoding: 'utf8' }).stdout ?? '')) {
   console.log('[tunnel] Using the Cloudflared Windows service (set up in the Cloudflare dashboard).');
 } else {
-  console.log('[tunnel] Not set up. Only this PC can play. Run setup-tunnel.cmd to put the game online.');
+  console.log('[tunnel] Not set up. Only this PC can play. Run setup-tunnel.bat to put the game online.');
 }
 
 // 4. Ready.
