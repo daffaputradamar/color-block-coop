@@ -1,9 +1,11 @@
-// End-to-end check: two players join one room and clear level 1 in split-colors mode,
-// plus the deployment hooks (health check, origin allowlist, room rebuild after restart).
+// End-to-end check: two players join a seeded room and clear its first (generated) level by
+// replaying the solver's solution, plus seeds, deployment hooks and review regressions.
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { buildOcc, canPlace, cloneBlocks, isWon, moveStep, resolveExits } from '../shared/logic.js';
+import { solve } from '../shared/solver.js';
 
 const PORT = 3999;
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -94,61 +96,134 @@ const check = (cond, label) => {
   if (!cond) failures++;
 };
 
+// Plays a level to the win through the real protocol. Each block is always moved by the same
+// player, every step waits for the server's ack, and the local mirror follows the same rules.
+async function playOut(state, players) {
+  const { level } = state;
+  const blocks = cloneBlocks(state.blocks);
+  for (let round = 0; round < 50 && !isWon(blocks); round++) {
+    const res = solve(level, blocks, { maxStates: 300000 });
+    if (!res.solvable) throw new Error('solver found no solution for the current board');
+    for (const [id, dx, dy] of res.path) {
+      const p = players[id % players.length];
+      const b = blocks[id];
+      if (p.held !== id) {
+        p.send({ type: 'grab', id });
+        p.held = id;
+        // Grabbing a block that already lines up with its door sends it through: re-plan.
+        const events = resolveExits(level, buildOcc(level, blocks), blocks, b);
+        if (events.length) {
+          await p.wait((m) => m.type === 'state' && m.events?.some((e) => e.id === id), 'grab exit');
+          p.held = null;
+          break;
+        }
+      }
+      p.send({ type: 'move', id, steps: [[dx, dy]] });
+      const mv = await p.wait((m) => m.type === 'moved' && m.id === id, 'move ack');
+      if (mv.by === null) throw new Error('server rejected a solver step');
+      const occ = buildOcc(level, blocks);
+      moveStep(occ, level, b, dx, dy);
+      if (resolveExits(level, occ, blocks, b).length) {
+        await p.wait((m) => m.type === 'state' && m.events?.some((e) => e.id === id), 'exit');
+        if (b.gone) p.held = null;
+      }
+    }
+  }
+}
+
+// A block and a direction where the target cells are on the board but another block is in the way.
+function blockedStep(level, blocks) {
+  const occ = buildOcc(level, blocks);
+  for (const b of blocks) {
+    if (b.ice || b.lock) continue;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if ((b.axis === 'h' && dy) || (b.axis === 'v' && dx)) continue;
+      const cells = b.cells.map(([cx, cy]) => [b.x + cx + dx, b.y + cy + dy]);
+      const onBoard = cells.every(([x, y]) => x >= 0 && y >= 0 && x < level.w && y < level.h && !level.walls[y * level.w + x]);
+      if (onBoard && !canPlace(level, occ, b, b.x + dx, b.y + dy)) return { b, dx, dy };
+    }
+  }
+  return null;
+}
+
+async function firstState(name, join) {
+  const c = client(name);
+  await c.open();
+  c.send({ type: 'join', name, ...join });
+  c.you = (await c.wait((m) => m.type === 'welcome', 'welcome')).you;
+  return { c, st: await c.wait((m) => m.type === 'state', 'state') };
+}
+const boardKey = (st) => JSON.stringify([st.level.walls, st.level.doors, st.blocks.map((b) => [b.x, b.y, b.cells, b.color, b.layers])]);
+
 try {
   const a = client('Alice');
   await a.open();
-  a.send({ type: 'join', name: 'Alice' });
+  a.send({ type: 'join', name: 'Alice', seed: 'smoke-1' });
   const wa = await a.wait((m) => m.type === 'welcome', 'welcome');
+  a.you = wa.you;
   check(/^[A-Z]{4}$/.test(wa.code), `room created (${wa.code})`);
-  await a.wait((m) => m.type === 'state', 'first state');
+  const first = await a.wait((m) => m.type === 'state', 'first state');
+  check(first.seed === 'SMOKE1', 'room uses the chosen seed, normalized to letters and digits');
 
   const b = client('Bob');
   await b.open();
-  b.send({ type: 'join', name: 'Bob', room: wa.code });
+  b.send({ type: 'join', name: 'Bob', room: wa.code, seed: 'OTHER' });
   const wb = await b.wait((m) => m.type === 'welcome', 'welcome');
+  b.you = wb.you;
   check(wb.code === wa.code, 'second player joined the same room');
   const st = await a.wait((m) => m.type === 'state' && m.players.length === 2, 'two-player state');
-  check(st.owners.red === wa.you && st.owners.blue === wb.you && st.owners.green === wa.you, 'colors split between players');
+  check(st.seed === 'SMOKE1', "joining keeps the room's seed");
+  const owners = Object.values(st.owners);
+  check(owners.length > 0 && owners.every((o) => o === a.you || o === b.you) && new Set(owners).size === Math.min(2, owners.length),
+    'colors split between players');
 
-  const id = (tag) => st.blocks.find((x) => x.tag === tag).id;
+  const bobs = st.blocks.find((x) => st.owners[x.color] === b.you && !x.ice && !x.lock);
+  if (bobs) {
+    a.send({ type: 'grab', id: bobs.id });
+    const deny = await a.wait((m) => m.type === 'deny', 'deny');
+    check(deny.reason === 'owner' && deny.owner === b.you, "Alice can't grab Bob's block");
+  }
 
-  a.send({ type: 'grab', id: id('B') });
-  const deny = await a.wait((m) => m.type === 'deny', 'deny');
-  check(deny.reason === 'owner' && deny.owner === wb.you, "Alice can't grab Bob's blue block");
+  a.send({ type: 'mode', mode: 'free' });
+  const free = await b.wait((m) => m.type === 'state' && m.mode === 'free', 'shared hands');
+  const blocked = blockedStep(free.level, free.blocks);
+  if (blocked) {
+    a.send({ type: 'grab', id: blocked.b.id });
+    a.send({ type: 'move', id: blocked.b.id, steps: [[blocked.dx, blocked.dy]] });
+    const mv = await a.wait((m) => m.type === 'moved' && m.id === blocked.b.id, 'blocked move');
+    check(mv.by === null && mv.x === blocked.b.x && mv.y === blocked.b.y, 'a move into another block is rejected and the mover corrected');
+    a.send({ type: 'release', id: blocked.b.id });
+  }
 
-  b.send({ type: 'grab', id: id('B') });
-  await b.wait((m) => m.type === 'state' && m.status === 'playing', 'timer start');
-  b.send({ type: 'move', id: id('B'), steps: [[-1, 0], [-1, 0]] });
-  const exitB = await a.wait((m) => m.type === 'state' && m.events?.length, 'blue exit');
-  check(exitB.events[0].id === id('B') && exitB.blocks[id('B')].gone, 'blue block left through the blue door');
-
-  a.send({ type: 'grab', id: id('R') });
-  await a.wait((m) => m.type === 'grab', 'grab red');
-  a.send({ type: 'move', id: id('R'), steps: [[1, 0], [1, 0]] });
-  const moved = await a.wait((m) => m.type === 'moved' && m.id === id('R'), 'red moved');
-  check(moved.by === null && moved.x === 1, 'move into the green block stops at x=1 and the mover is corrected');
-  a.send({ type: 'release', id: id('R') });
-
-  a.send({ type: 'grab', id: id('G') });
-  a.send({ type: 'move', id: id('G'), steps: [[0, 1], [0, 1]] });
-  await a.wait((m) => m.type === 'state' && m.events?.some((e) => e.id === id('G')), 'green exit');
-
-  a.send({ type: 'grab', id: id('R') });
-  a.send({ type: 'move', id: id('R'), steps: [[1, 0]] });
+  await playOut(free, [a, b]);
   const won = await b.wait((m) => m.type === 'state' && m.status === 'won', 'win');
-  check(won.result.stars === 3 && won.unlocked === 1, 'level cleared with 3 stars, level 2 unlocked');
-  check(won.result.exitsBy[wa.you] === 2 && won.result.exitsBy[wb.you] === 1, 'per-player exit stats tracked');
+  const exitsNeeded = free.blocks.reduce((n, x) => n + 1 + x.layers.length, 0);
+  check(won.unlocked === 1 && won.result.stars >= 2, 'generated level cleared by replaying the solver, level 2 unlocked');
+  check(Object.values(won.result.exitsBy).reduce((x, y) => x + y, 0) === exitsNeeded, 'per-player exit stats add up');
 
   b.send({ type: 'next' });
   const next = await a.wait((m) => m.type === 'state' && m.levelIndex === 1, 'level 2');
-  check(next.status === 'ready' && next.level.name === 'Wide Load', 'anyone can advance to the next level');
+  check(next.status === 'ready' && next.seed === 'SMOKE1', 'anyone can advance to the next level');
 
-  a.send({ type: 'level', index: next.campaign });
+  a.send({ type: 'level', index: 5 });
   const locked = await Promise.race([
-    a.wait((m) => m.type === 'loading' && m.levelIndex === next.campaign, 'loading').then(() => 'loaded'),
+    a.wait((m) => m.type === 'loading' && m.levelIndex === 5, 'loading').then(() => 'loaded'),
     new Promise((r) => setTimeout(() => r('ignored'), 400)),
   ]);
   check(locked === 'ignored', 'locked levels cannot be selected');
+
+  // ----- seeds -----
+  const same1 = await firstState('S1', { seed: 'same' });
+  const same2 = await firstState('S2', { seed: 'SAME' });
+  const other = await firstState('S3', { seed: 'different' });
+  const random = await firstState('S4', {});
+  check(boardKey(same1.st) === boardKey(same2.st), 'the same seed gives the same board');
+  check(boardKey(same1.st) !== boardKey(other.st), 'a different seed gives a different board');
+  check(/^[A-Z2-9]{6}$/.test(random.st.seed), `a room without a seed gets a random one (${random.st.seed})`);
+  const re1 = await firstState('S5', { room: 'QQSA', resume: { levelIndex: 2, unlocked: 2, seed: 'SAME' } });
+  const re2 = await firstState('S6', { room: 'QQSB', resume: { levelIndex: 2, unlocked: 2, seed: 'SAME' } });
+  check(re1.st.seed === 'SAME' && re1.st.levelIndex === 2 && boardKey(re1.st) === boardKey(re2.st), 'a rebuilt room keeps its seed and boards');
+  for (const x of [same1, same2, other, random, re1, re2]) x.c.ws.close();
 
   a.ws.close();
   b.ws.close();
@@ -180,7 +255,7 @@ try {
   await e.open();
   e.send({ type: 'join', name: 'Eve', room: 'QQWW', resume: { levelIndex: 1, unlocked: 1e9 } });
   const clamped = await e.wait((m) => m.type === 'state', 'clamped state');
-  check(clamped.levelIndex === 1 && clamped.unlocked === clamped.campaign + 200, 'resume values are clamped');
+  check(clamped.levelIndex === 1 && clamped.unlocked === 500, 'resume values are clamped');
 
   const f = client('Fay');
   await f.open();
@@ -197,22 +272,22 @@ try {
 
   const g = client('Gus');
   await g.open();
-  g.send({ type: 'join', name: 'Gus', room: 'QQEE', resume: { levelIndex: next.campaign, unlocked: next.campaign } });
+  g.send({ type: 'join', name: 'Gus', room: 'QQEE', resume: { levelIndex: 3, unlocked: 3 } });
   const genNotice = await g.wait((m) => m.type === 'loading' || m.type === 'state', 'loading notice');
   check(genNotice.type === 'loading', 'joining a room that is still generating gets a loading notice');
-  const endless = await g.wait((m) => m.type === 'state', 'rebuilt endless room');
-  check(endless.levelIndex === next.campaign && endless.level.name.startsWith('Endless'), 'rebuilding a room into an endless level works');
+  const later = await g.wait((m) => m.type === 'state', 'rebuilt room');
+  check(later.levelIndex === 3 && later.status === 'ready', 'rebuilding a room at a later level works');
 
-  g.send({ type: 'level', index: next.campaign + 0 });
-  g.send({ type: 'level', index: next.campaign - 1 });
-  g.send({ type: 'level', index: next.campaign - 2 });
-  await g.wait((m) => m.type === 'loading', 'endless reload');
+  g.send({ type: 'level', index: 3 });
+  g.send({ type: 'level', index: 2 });
+  g.send({ type: 'level', index: 1 });
+  await g.wait((m) => m.type === 'loading', 'reload');
   const settled = await g.wait((m) => m.type === 'state', 'reload settled');
   const extraLoad = await Promise.race([
     g.wait((m) => m.type === 'loading', 'extra load').then(() => true),
     new Promise((r) => setTimeout(() => r(false), 400)),
   ]);
-  check(settled.levelIndex === next.campaign && !extraLoad, 'level picks are ignored while a level is generating');
+  check(settled.levelIndex === 3 && !extraLoad, 'level picks are ignored while a level is generating');
 
   for (const type of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) g.send({ type });
   check((await rawHttp('GET //[ HTTP/1.1\r\nHost: x\r\n\r\n')).startsWith('HTTP/1.1 400'), 'malformed request path answers 400');

@@ -179,8 +179,14 @@ Blockers, introduced one per level:
 - Anyone can restart, pick a level or advance. The end screen shows who cleared which blocks.
 - The ◆ button adds a symbol to each color for color-blind play.
 
-There are 12 handcrafted levels, then **Endless mode**: procedurally generated boards that get
-bigger and add blockers as you go.
+### Seeds
+
+Every room has a **seed** that decides all of its levels: the same seed always produces the same
+boards in the same order. Type one in the lobby when creating a room (letters and digits, e.g.
+`DAFFA`), or leave it empty for a random one. The seed shows next to the level number; click it to
+copy it, so friends in another room can play the exact same puzzles. Levels get bigger and add new
+blockers as you go, with a hint the first time each one appears. The next level is generated in the
+background while you play, and every board is checked by the solver before it's used.
 
 ## How it's built
 
@@ -188,27 +194,30 @@ bigger and add blockers as you go.
   it validates every grab and step, resolves exits, runs the timer and broadcasts state.
 - `shared/logic.js`: the rules, imported by both the server and the browser. The browser predicts
   your own drag locally with the same code, and the server corrects it if a teammate got there first.
-- `shared/solver.js`: best-first search that proves a board is solvable.
-- `shared/generator.js`: Endless levels. Random boards are kept only if the solver clears them.
-  Generation runs in a worker thread (`shared/gen-worker.js`).
+- `shared/solver.js`: best-first search that proves a board is solvable and returns a solution.
+- `shared/generator.js`: builds level N of a seed. Random boards are kept only if the solver clears
+  them. Generation runs in worker threads (`shared/gen-worker.js`), at most two at a time.
+- `shared/levels.js`: handcrafted boards, used only if generation ever fails.
 - `public/`: vanilla JS client. Canvas renderer (`render.js`), synthesized sound (`sfx.js`), no
   bundler. `config.js` says where the game server is (empty means the page's own host).
 
 ## Scripts
 
-- `npm run verify`: proves every handcrafted level is solvable and that each door sits on an open edge.
-- `npm test`: `verify`, then a two-player end-to-end run of level 1 over real WebSockets, plus the
-  deploy hooks (`/healthz`, the origin allowlist, rebuilding a room after a restart).
+- `npm run verify`: proves every handcrafted fallback board is solvable and that each door sits on an
+  open edge.
+- `npm test`: `verify`, then two players clear a seeded room's first level over real WebSockets by
+  replaying the solver's solution, plus seed determinism and the deploy hooks (`/healthz`, the
+  origin allowlist, rebuilding a room after a restart).
 - `npm run build`: writes the static frontend to `dist/` (set `GAME_SERVER_URL` to point it at a
   separate game server).
-- `UNLOCK_ALL=1 npm start`: every level is unlocked in new rooms (handy for testing levels).
+- `UNLOCK_ALL=1 npm start`: the first 30 levels are unlocked in new rooms (handy for testing).
 
 Server environment variables: `PORT`, `ALLOWED_ORIGINS` (comma-separated, `*` matches part of one
 domain label; empty allows any origin) and `UNLOCK_ALL`.
 
-## Adding a level
+## Handcrafted boards
 
-Levels in `shared/levels.js` are ASCII grids: `.` is empty, `#` is a wall, and any other character
+The fallback boards in `shared/levels.js` are ASCII grids: `.` is empty, `#` is a wall, and any other character
 is a block. Block properties go in `blocks` (`color`, `layers`, `ice`, `axis: 'h'|'v'`, `lock`, `key`).
 Doors are `{ side, at, len, color }`, where `at` is the first cell along that side. Run
 `npm run verify` afterwards.

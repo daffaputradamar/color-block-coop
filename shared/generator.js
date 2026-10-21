@@ -41,6 +41,21 @@ function shuffle(r, arr) {
   return arr;
 }
 
+const NAME_A = ['Tiny', 'Twisty', 'Crowded', 'Sneaky', 'Frosty', 'Tangled', 'Lucky', 'Narrow', 'Busy', 'Quiet', 'Bouncy', 'Stubborn', 'Cozy', 'Wobbly', 'Clever', 'Grand'];
+const NAME_B = ['Corner', 'Shuffle', 'Gridlock', 'Garden', 'Puzzle', 'Parade', 'Alley', 'Market', 'Junction', 'Harbor', 'Maze', 'Drift', 'Plaza', 'Bridge', 'Knot', 'Jam'];
+
+// Mechanics unlock with stage (see tryBuild); explain each on the first level it can appear.
+function hintFor(stage, placed, grid) {
+  const has = (k) => placed.some((p) => p.props[k]);
+  if (stage === 0) return 'Drag a block into the door of its own color. Doors must be at least as wide as the block.';
+  if (stage === 1 && has('axis')) return 'Arrow blocks only slide along their arrows.';
+  if (stage === 2 && has('ice')) return 'Frozen blocks thaw by one every time any block leaves the board.';
+  if (stage === 3 && has('layers')) return 'Layered blocks shed their outer color at a matching door, then need the next door.';
+  if (stage === 3 && grid.some((row) => row.includes('#'))) return 'Corner walls block the way. Plan around them.';
+  if (stage === 4 && has('lock')) return 'Locked blocks open once every 🔑 block has left the board.';
+  return null;
+}
+
 function tryBuild(stage, r) {
   const w = 5 + Math.min(2, Math.floor(stage / 4));
   const h = w + (r() < 0.5 ? 1 : 0);
@@ -134,7 +149,8 @@ function tryBuild(stage, r) {
   const blocks = {};
   for (const p of placed) blocks[p.tag] = p.props;
   return {
-    name: `Endless ${stage + 1}`,
+    name: `${pick(r, NAME_A)} ${pick(r, NAME_B)}`,
+    hint: hintFor(stage, placed, grid),
     time: 45 + placed.length * 12,
     grid: grid.map((row) => row.join('')),
     blocks,

@@ -16,7 +16,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const MAX_PLAYERS = 4;
 const UNLOCK_ALL = process.env.UNLOCK_ALL === '1';
 const PLAYER_COLORS = ['#ff5fa2', '#3ddcff', '#b6f24a', '#ffb13d'];
-const MAX_ENDLESS_RESUME = 200;
+const MAX_LEVEL = 500;
 
 const MAX_WORKERS = 2;
 
@@ -150,6 +150,18 @@ function pumpWorkers() {
 const rooms = new Map();
 let nextPlayerId = 1;
 
+// A room's seed decides every board it will ever play: the same seed gives the same levels in the
+// same order. Seeds are short text so players can share them; text maps to a 32-bit number.
+const SEED_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const cleanSeed = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
+const randomSeed = () => Array.from({ length: 6 }, () => SEED_CHARS[Math.floor(Math.random() * SEED_CHARS.length)]).join('');
+
+function seedNumber(text) {
+  let h = 0x811c9dc5;
+  for (const ch of text) h = Math.imul(h ^ ch.charCodeAt(0), 0x01000193);
+  return h >>> 0;
+}
+
 function makeCode() {
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code;
@@ -160,26 +172,28 @@ function makeCode() {
 }
 
 class Room {
-  // `resume` rebuilds progress for players reconnecting after a server restart wiped their room.
-  constructor(code, resume = null) {
+  // `seed` is the creator's choice (random if empty). `resume` rebuilds seed and progress for
+  // players reconnecting after a server restart wiped their room.
+  constructor(code, { seed = null, resume = null } = {}) {
     this.code = code;
     this.players = new Map();
     this.mode = 'split';
     this.levelIndex = 0;
-    this.unlocked = UNLOCK_ALL ? LEVELS.length : 0;
-    this.seed = Math.floor(Math.random() * 1e9);
+    this.unlocked = UNLOCK_ALL ? 30 : 0;
+    this.seedText = cleanSeed(resume?.seed) || cleanSeed(seed) || randomSeed();
+    this.seed = seedNumber(this.seedText);
     this.loadToken = 0;
     this.grabs = new Map();
     this.status = 'loading';
     this.emptySince = null;
-    // Empty board until the first level loads (an endless level loads asynchronously).
+    // Empty board until the first level has been generated.
     this.level = null;
     this.blocks = [];
     this.owners = {};
     let start = 0;
     const unlocked = resume?.unlocked;
     const index = resume?.levelIndex;
-    if (Number.isInteger(unlocked) && unlocked >= 0) this.unlocked = Math.max(this.unlocked, Math.min(unlocked, LEVELS.length + MAX_ENDLESS_RESUME));
+    if (Number.isInteger(unlocked) && unlocked >= 0) this.unlocked = Math.max(this.unlocked, Math.min(unlocked, MAX_LEVEL));
     if (Number.isInteger(index) && index >= 0) start = Math.min(index, this.unlocked);
     this.load(start);
   }
@@ -196,22 +210,25 @@ class Room {
   async load(index) {
     const token = ++this.loadToken;
     this.genJob?.cancel();
-    this.genJob = null;
+    // Reuse the board prefetched for this index; drop a prefetch for any other one.
+    const ready = this.prefetch?.index === index ? this.prefetch.job : null;
+    if (this.prefetch && !ready) this.prefetch.job.cancel();
+    this.prefetch = null;
+    this.genJob = ready ?? generateAsync(index, this.seed);
     clearTimeout(this.timer);
     this.status = 'loading';
     this.loadingIndex = index;
     this.grabs.clear();
     this.broadcast({ type: 'loading', levelIndex: index });
-    let def = LEVELS[index];
-    if (!def) {
-      this.genJob = generateAsync(index - LEVELS.length, this.seed + index);
-      def = await this.genJob.promise;
-    }
+    const def = await this.genJob.promise;
     if (token !== this.loadToken) return;
     this.genJob = null;
-    this.def = def ?? LEVELS[LEVELS.length - 1];
+    // The generator practically always succeeds; a handcrafted board is the safety net.
+    this.def = def ?? LEVELS[index % LEVELS.length];
     this.levelIndex = index;
     this.reset();
+    // Build the next board in the background so "Next level" is instant.
+    if (index < MAX_LEVEL) this.prefetch = { index: index + 1, job: generateAsync(index + 1, this.seed) };
   }
 
   reset() {
@@ -254,8 +271,7 @@ class Room {
       grabs: Object.fromEntries(this.grabs),
       levelIndex: this.levelIndex,
       unlocked: this.unlocked,
-      campaign: LEVELS.length,
-      campaignNames: LEVELS.map((l) => l.name),
+      seed: this.seedText,
       result: this.result,
       events,
     });
@@ -285,7 +301,7 @@ class Room {
       const timeLeft = Math.max(0, this.endsAt - Date.now());
       const frac = timeLeft / (this.level.time * 1000);
       this.status = 'won';
-      this.unlocked = Math.max(this.unlocked, this.levelIndex + 1);
+      this.unlocked = Math.min(MAX_LEVEL, Math.max(this.unlocked, this.levelIndex + 1));
       this.result = { timeLeft, stars: frac > 0.5 ? 3 : frac > 0.2 ? 2 : 1, exitsBy: this.exitsBy };
     }
     this.sendState(events);
@@ -417,13 +433,13 @@ class Room {
   }
 
   onNext() {
-    if (this.status === 'won') this.load(this.levelIndex + 1);
+    if (this.status === 'won' && this.levelIndex < MAX_LEVEL) this.load(this.levelIndex + 1);
   }
 
   onLevel(player, { index }) {
     // Ignored while a level is generating, so spamming level picks can't pile up work.
     if (this.status === 'loading') return;
-    if (Number.isInteger(index) && index >= 0 && index <= this.unlocked) this.load(index);
+    if (Number.isInteger(index) && index >= 0 && index <= this.unlocked && index <= MAX_LEVEL) this.load(index);
   }
 
   onMode(player, { mode }) {
@@ -474,7 +490,8 @@ wss.on('connection', (ws) => {
         const code = wanted || makeCode();
         room = rooms.get(code);
         if (!room) {
-          room = new Room(code, wanted && msg.resume && typeof msg.resume === 'object' ? msg.resume : null);
+          const resume = wanted && msg.resume && typeof msg.resume === 'object' ? msg.resume : null;
+          room = new Room(code, { seed: msg.seed, resume });
           rooms.set(code, room);
         }
         // A per-tab session token lets a reconnecting tab reclaim its seat from a stale socket.
@@ -525,6 +542,7 @@ setInterval(() => {
     if (room.emptySince && Date.now() - room.emptySince > 10 * 60 * 1000) {
       clearTimeout(room.timer);
       room.genJob?.cancel();
+      room.prefetch?.job.cancel();
       rooms.delete(code);
     }
   }

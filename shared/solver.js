@@ -1,4 +1,4 @@
-// Best-first search over single-cell moves. Used to prove levels are solvable
+// Best-first search over single-cell moves; a solution comes back as path: [blockId, dx, dy][]. Used to prove levels are solvable
 // (handcrafted ones in scripts/verify-levels.js, generated ones at runtime).
 // Mirrors the rules in logic.js on a compact state: per block [x, y, exitsDone].
 // Frozen counters need no storage: a block's ice is ice0 minus total exits so far.
@@ -77,15 +77,16 @@ export function solve(level, startBlocks, { maxStates = 400000 } = {}) {
   const seen = new Set([keyOf(start)]);
   const buckets = [];
   const heads = [];
-  const push = (s, depth, exits) => {
-    const p = totalExits - exits;
+  // Each node remembers its parent and the step that produced it, so a solution can be replayed.
+  const push = (node) => {
+    const p = totalExits - node.exits;
     if (!buckets[p]) {
       buckets[p] = [];
       heads[p] = 0;
     }
-    buckets[p].push({ s, depth, exits });
+    buckets[p].push(node);
   };
-  push(start, 0, start.reduce((acc, v, k) => (k % 3 === 2 ? acc + v : acc), 0));
+  push({ s: start, depth: 0, exits: start.reduce((acc, v, k) => (k % 3 === 2 ? acc + v : acc), 0), parent: null, step: null });
   let states = 1;
 
   for (;;) {
@@ -94,7 +95,11 @@ export function solve(level, startBlocks, { maxStates = 400000 } = {}) {
     if (p >= buckets.length) return { solvable: false, states, complete: true };
     const node = buckets[p][heads[p]];
     buckets[p][heads[p]++] = null;
-    if (p === 0) return { solvable: true, moves: node.depth, states };
+    if (p === 0) {
+      const path = [];
+      for (let k = node; k.step; k = k.parent) path.push(k.step);
+      return { solvable: true, moves: node.depth, states, path: path.reverse() };
+    }
     const s = node.s;
     fillOcc(s);
     let keys = false;
@@ -137,7 +142,7 @@ export function solve(level, startBlocks, { maxStates = 400000 } = {}) {
         if (seen.has(k)) continue;
         seen.add(k);
         if (++states > maxStates) return { solvable: false, states, complete: false };
-        push(next, node.depth + 1, exits);
+        push({ s: next, depth: node.depth + 1, exits, parent: node, step: [i, dx, dy] });
       }
     }
   }

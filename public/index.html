@@ -27,6 +27,11 @@
         <input id="name-input" maxlength="16" autocomplete="nickname" placeholder="e.g. Daffa" />
       </label>
 
+      <label class="field">
+        <span>Puzzle seed <em>(optional: the same seed always gives the same puzzles)</em></span>
+        <input id="seed-input" maxlength="12" placeholder="Random" autocomplete="off" spellcheck="false" />
+      </label>
+
       <button id="create-btn" class="btn primary big">Create a room</button>
 
       <div class="divider"><span>or join a friend</span></div>
@@ -60,7 +65,7 @@
         <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>
       </button>
       <div class="level-info">
-        <div id="level-num" class="level-num"></div>
+        <div class="level-num"><span id="level-num"></span> · <button id="seed-btn" class="seed-btn" title="Copy seed"></button></div>
         <div id="level-name" class="level-name"></div>
       </div>
       <div class="timer" id="timer">
@@ -117,8 +122,8 @@
           <h2>Levels</h2>
           <button id="picker-close" class="icon-btn" aria-label="Close">✕</button>
         </div>
+        <p class="picker-sub">Every level in this room comes from seed <b id="picker-seed"></b>.</p>
         <div id="picker-grid" class="picker-grid"></div>
-        <button id="endless-btn" class="btn primary endless">∞ Endless mode</button>
       </div>
     </div>
   </section>

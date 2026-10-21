@@ -42,8 +42,7 @@ const S = {
   grabs: {},
   levelIndex: 0,
   unlocked: 0,
-  campaign: 0,
-  campaignNames: [],
+  seed: '',
   result: null,
   disp: new Map(),
   drag: null,
@@ -67,6 +66,7 @@ let retryDelay = 500;
 // Identifies this tab across reconnects so the server can hand back our seat. Memory only:
 // two tabs must not share it. (getRandomValues also works on plain-http LAN addresses.)
 const SESSION = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+const cleanSeed = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
 const cleanCode = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6);
 
 // A free-tier server sleeps when idle, so start waking it while the player types their name.
@@ -111,6 +111,8 @@ function startJoin(code) {
   resetSession();
   S.name = name;
   S.code = code || null;
+  // Only a new room takes a seed; joining an existing room plays its seed.
+  S.createSeed = code ? null : cleanSeed($('seed-input').value) || null;
   S.fatal = false;
   S.connectStart = Date.now();
   retryDelay = 500;
@@ -132,6 +134,7 @@ $('join-btn').onclick = () => {
   startJoin(code);
 };
 $('code-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('join-btn').click());
+$('seed-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('create-btn').click());
 $('name-input').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   if ($('code-input').value.trim()) $('join-btn').click();
@@ -151,8 +154,8 @@ function connect() {
   ws.onopen = () => {
     retryDelay = 500;
     // After a server restart the room is gone; offer our progress so it can be rebuilt.
-    const resume = S.level ? { levelIndex: S.levelIndex, unlocked: S.unlocked } : undefined;
-    ws.send(JSON.stringify({ type: 'join', room: S.code, name: S.name, session: SESSION, resume }));
+    const resume = S.level ? { levelIndex: S.levelIndex, unlocked: S.unlocked, seed: S.seed } : undefined;
+    ws.send(JSON.stringify({ type: 'join', room: S.code, name: S.name, session: SESSION, seed: S.createSeed, resume }));
   };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
@@ -349,8 +352,7 @@ function applyState(msg) {
   S.grabs = msg.grabs;
   S.levelIndex = msg.levelIndex;
   S.unlocked = msg.unlocked;
-  S.campaign = msg.campaign;
-  S.campaignNames = msg.campaignNames;
+  S.seed = msg.seed;
   S.result = msg.result;
 
   if (prevPlayers.length) {
@@ -388,8 +390,8 @@ function applyState(msg) {
 
 function renderHud() {
   const L = S.level;
-  const endless = S.levelIndex >= S.campaign;
-  $('level-num').textContent = endless ? `Endless · stage ${S.levelIndex - S.campaign + 1}` : `Level ${S.levelIndex + 1} of ${S.campaign}`;
+  $('level-num').textContent = `Level ${S.levelIndex + 1}`;
+  $('seed-btn').textContent = `Seed ${S.seed}`;
   $('level-name').textContent = L.name;
 
   for (const btn of $('mode-seg').querySelectorAll('button')) btn.classList.toggle('on', btn.dataset.mode === S.mode);
@@ -426,10 +428,13 @@ function renderHud() {
   renderPicker();
 }
 
+// Levels are generated from the seed, so only their numbers are known ahead of time:
+// everything up to the furthest level reached, plus the next one (locked until cleared).
 function renderPicker() {
+  $('picker-seed').textContent = S.seed;
   const grid = $('picker-grid');
   grid.replaceChildren();
-  S.campaignNames.forEach((name, i) => {
+  for (let i = 0; i <= S.unlocked + 1 && i < 500; i++) {
     const b = document.createElement('button');
     b.className = 'lvl' + (i === S.levelIndex ? ' current' : '');
     b.disabled = i > S.unlocked;
@@ -438,22 +443,14 @@ function renderPicker() {
     n.textContent = i > S.unlocked ? `🔒 ${i + 1}` : String(i + 1);
     const t = document.createElement('span');
     t.className = 't';
-    t.textContent = name;
+    t.textContent = i === S.levelIndex ? S.level.name : i > S.unlocked ? 'Clear the last one first' : 'Level ' + (i + 1);
     b.append(n, t);
     b.onclick = () => {
       send({ type: 'level', index: i });
       $('picker').classList.add('hidden');
     };
     grid.append(b);
-  });
-  const endlessIdx = Math.max(S.campaign, S.unlocked);
-  const eb = $('endless-btn');
-  eb.disabled = S.unlocked < S.campaign;
-  eb.textContent = S.unlocked < S.campaign ? `∞ Endless mode (clear all ${S.campaign} levels to unlock)` : `∞ Endless mode: stage ${endlessIdx - S.campaign + 1}`;
-  eb.onclick = () => {
-    send({ type: 'level', index: endlessIdx });
-    $('picker').classList.add('hidden');
-  };
+  }
 }
 
 function showResult() {
@@ -598,19 +595,26 @@ $('glyph-btn').onclick = () => {
   renderHud();
 };
 
-$('room-btn').onclick = async () => {
-  const link = `${location.origin}/?room=${S.code}`;
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(link);
+    await navigator.clipboard.writeText(text);
   } catch {
     const ta = document.createElement('textarea');
-    ta.value = link;
+    ta.value = text;
     document.body.append(ta);
     ta.select();
     document.execCommand('copy');
     ta.remove();
   }
+}
+
+$('room-btn').onclick = async () => {
+  await copyText(`${location.origin}/?room=${S.code}`);
   toast('Invite link copied. Send it to a friend!');
+};
+$('seed-btn').onclick = async () => {
+  await copyText(S.seed);
+  toast(`Seed ${S.seed} copied. Type it when creating a room to get these same puzzles.`);
 };
 
 // ---------- board input ----------
