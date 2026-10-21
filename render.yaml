@@ -1,0 +1,30 @@
+# Render Blueprint for the Color Block Co-op game server (WebSocket rooms, held in memory).
+# The frontend is deployed separately on Vercel as static files; Render only runs server.js.
+# Spec: https://render.com/docs/blueprint-spec  Schema: https://render.com/schema/render.yaml.json
+services:
+  - type: web
+    name: color-block-coop       # the onrender.com subdomain comes from this name; copy the real URL from the dashboard
+    runtime: node
+    plan: free                   # set explicitly: when omitted, a new web service gets a paid plan
+    region: singapore            # closest region to Indonesia; cannot be changed after creation
+    buildCommand: npm ci
+    startCommand: node server.js # run node directly so SIGTERM reaches server.js's shutdown handler
+    healthCheckPath: /healthz
+    numInstances: 1              # rooms live in memory: never scale out
+    autoDeployTrigger: commit
+    buildFilter:
+      # Every deploy drops all in-memory rooms (players rejoin automatically), so commits that only
+      # touch the Vercel frontend, tooling or docs should not redeploy the game server.
+      # render.yaml edits, manual deploys and env var edits are not filtered.
+      ignoredPaths:
+        - public/**
+        - scripts/**
+        - vercel.json
+        - .gitignore
+        - .claude/**
+        - "**/*.md"
+    envVars:
+      - key: NODE_VERSION        # keep in step with package.json engines "24.x"
+        value: "24"
+      - key: ALLOWED_ORIGINS     # e.g. https://<project>.vercel.app (comma-separated; empty = any origin)
+        sync: false

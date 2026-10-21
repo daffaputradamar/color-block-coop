@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Color Block Co-op</title>
+  <meta name="description" content="Slide colored blocks into matching doors — together, in real time." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='2' width='13' height='13' rx='3' fill='%23ef4444'/><rect x='17' y='2' width='13' height='13' rx='3' fill='%233b82f6'/><rect x='2' y='17' width='13' height='13' rx='3' fill='%2322c55e'/><rect x='17' y='17' width='13' height='13' rx='3' fill='%23facc15'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Lobby -->
+  <section id="lobby" class="screen">
+    <div class="lobby-card">
+      <h1 class="logo">
+        <span class="lb r">C</span><span class="lb b">o</span><span class="lb g">l</span><span class="lb y">o</span><span class="lb p">r</span>
+        <span class="logo-word">Block</span>
+        <span class="logo-tag">CO-OP</span>
+      </h1>
+      <p class="tagline">Slide every block into the door of its color, together, before time runs out.</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="name-input" maxlength="16" autocomplete="nickname" placeholder="e.g. Daffa" />
+      </label>
+
+      <button id="create-btn" class="btn primary big">Create a room</button>
+
+      <div class="divider"><span>or join a friend</span></div>
+
+      <div class="join-row">
+        <input id="code-input" maxlength="6" placeholder="ROOM CODE" autocomplete="off" spellcheck="false" />
+        <button id="join-btn" class="btn">Join</button>
+      </div>
+      <p id="lobby-error" class="error" role="alert"></p>
+
+      <details class="howto">
+        <summary>How to play</summary>
+        <ul>
+          <li><b>Drag</b> a block. It slides until it bumps into something.</li>
+          <li>A block leaves through a <b>door of its color</b>, but only if the door is at least as wide as the block.</li>
+          <li><b>Split colors</b> mode: each player controls only their own colors, so talk it out. <b>Shared hands</b>: anyone moves anything.</li>
+          <li><b>Tap an empty tile</b> to ping it for your team. Use the emote bar to call plays.</li>
+          <li>Watch for <b>frozen</b> blocks (thaw as others leave), <b>arrow</b> blocks (one axis only), <b>layered</b> blocks (two doors) and <b>locks</b> (open when the key block leaves).</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- Game -->
+  <section id="game" class="screen hidden">
+    <header class="hud">
+      <button id="levels-btn" class="icon-btn" title="Levels" aria-label="Choose level">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>
+      </button>
+      <div class="level-info">
+        <div id="level-num" class="level-num"></div>
+        <div id="level-name" class="level-name"></div>
+      </div>
+      <div class="timer" id="timer">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm1 10.4 3.2 3.2-1.4 1.4-3.8-3.8V6h2Z"/></svg>
+        <span id="timer-text">--:--</span>
+      </div>
+      <div class="hud-right">
+        <button id="room-btn" class="room-btn" title="Copy invite link">
+          <span class="room-label">Room</span> <b id="room-code">----</b>
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
+        </button>
+        <button id="glyph-btn" class="icon-btn" title="Color symbols (color-blind help)" aria-label="Toggle color symbols">◆</button>
+        <button id="mute-btn" class="icon-btn" title="Sound" aria-label="Toggle sound">🔊</button>
+      </div>
+    </header>
+    <div class="timebar"><div id="timebar-fill"></div></div>
+
+    <div id="players" class="players"></div>
+
+    <main id="stage" class="stage">
+      <canvas id="board"></canvas>
+      <div id="hint" class="hint hidden"></div>
+      <div id="toasts" class="toasts" aria-live="polite"></div>
+      <div id="conn" class="conn hidden">Reconnecting…</div>
+    </main>
+
+    <footer class="controls">
+      <div class="emotes" id="emotes"></div>
+      <div class="actions">
+        <div class="seg" id="mode-seg" role="group" aria-label="Co-op mode">
+          <button data-mode="split" title="Each player controls their own colors">Split colors</button>
+          <button data-mode="free" title="Anyone can move any block">Shared hands</button>
+        </div>
+        <button id="retry-btn" class="btn small" title="Restart level">↻ Restart</button>
+      </div>
+    </footer>
+
+    <div id="result" class="overlay hidden">
+      <div class="card">
+        <h2 id="result-title"></h2>
+        <div id="result-stars" class="stars"></div>
+        <p id="result-sub" class="sub"></p>
+        <div id="result-stats" class="stats"></div>
+        <div class="card-actions">
+          <button id="result-retry" class="btn">Replay</button>
+          <button id="result-next" class="btn primary">Next level →</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="picker" class="overlay hidden">
+      <div class="card wide">
+        <div class="card-head">
+          <h2>Levels</h2>
+          <button id="picker-close" class="icon-btn" aria-label="Close">✕</button>
+        </div>
+        <div id="picker-grid" class="picker-grid"></div>
+        <button id="endless-btn" class="btn primary endless">∞ Endless mode</button>
+      </div>
+    </div>
+  </section>
+
+  <script src="config.js"></script>
+  <script type="module" src="client.js"></script>
+</body>
+</html>
